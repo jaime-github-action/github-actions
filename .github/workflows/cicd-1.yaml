@@ -11,6 +11,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+      - name: Install dependencies
+        run: |
+          cd my-app
+          npm ci
+      - name: Build
+        run: |
+          cd my-app
+          npm run build
 
   image-build:
     if: github.event.pull_request.merged == true
@@ -18,6 +37,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Docker build & push
+        uses: mr-smithers-excellent/docker-build-push@v6
+        with:
+          image: ${{ secrets.REGISTRY}}/${{ vars.REPOSITORY }}:${{ github.sha }}
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
   deploy:
     needs: [ image-build ]
@@ -25,3 +51,35 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Deploy
+        id: status
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            helm upgrade --install my-app kubernetes/my-app --create-namespace --namespace my-app-${{ vars.SUFFIX }} \
+            -- set image.tag=${{ github.sha }} \
+            -- set image.repository=${{ secrets.REGISTRY }}/${{ vars.REPOSITORY }}
+      - name: Slack notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "message",
+              "blocks": [
+                  {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "Environment: dev, Deploy Result: ${{ steps.status.outcome }}, Repository Name: ${{ github.repository }}, Commit: ${{ github.sha }}"
+                    }
+                  }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
